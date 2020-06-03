@@ -1,6 +1,6 @@
 import groovy.json.JsonOutput
 
-config_url = "https://github.com/conan-ci-cd-training/settings.git"
+config_url = "https://github.com/conan-ci-sandbox/settings.git"
 
 artifactory_metadata_repo = "conan-metadata"
 conan_develop_repo = "conan-develop"
@@ -45,7 +45,7 @@ def build_ref_with_lockfile(reference, lockfile, profile, upload_ref) {
   }
 }
 
-def get_stages(product, profile, docker_image) {
+def calc_lockfiles(product, profile, docker_image) {
   return {
     stage(profile) {
       node {
@@ -84,35 +84,63 @@ def get_stages(product, profile, docker_image) {
                   affected_product = true
                 }
               }
-              if (affected_product) {
-                stage("Launch build: ${product}")
-                {
-                  // now that we have a lockfile as an input conan install will update the build nodes
-                  // doing an install with --build missing would produce the same results:
-                  // sh "conan install ${product} --profile ${profile} --lockfile=${lockfile} --build missing "
-                  // but using the build order and iterating the list of libraries to build
-                  // we could call to the real pipeline that should build the libraries
-                  // (here we don't call that pipeline to simplify)
-                  stash name: lockfile, includes: lockfile
+              stash name: lockfile, includes: lockfile              
+            }
+            finally {
+                deleteDir()
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
-                  build_order.each { references_list ->
-                    def stage_jobs = references_list.each { index_reference ->
-                      def lib_name = index_reference[1].split("/")[0]
-                      def lib_name_profile = "${lib_name}-${profile}.lock"
-                      // here, in the real world, one should invoke the actual lib pipeline, somemthing like:
-                      // build(job: "../lib/develop", propagate: true, wait: true, parameters...
-                      def upload_ref = (params.library_branch == "develop") ? true : false
-                      build_ref_with_lockfile(index_reference[1], lockfile, profile, upload_ref).call()
-                      unstash lib_name_profile
-                      sh "conan graph update-lock ${lockfile} ${lib_name_profile}"
-                      stash name: lockfile, includes: lockfile
-                    }
-                  }                  
-
-                  lock_contents = readJSON(file: lockfile)
-                  sh "cat ${lockfile}"
+def get_build_stages(product, profile, docker_image) {
+  return {
+    stage(profile) {
+      node {
+        docker.image(docker_image).inside("--net=host") {
+          echo "Inside docker image: ${docker_image}"
+          withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/${profile}/conan_home"]) {
+            try {
+              stage("Configure conan") {
+                sh "conan config install ${config_url}"
+                withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+                    sh "conan remote add ${conan_develop_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_develop_repo}" // the namme of the repo is the same that the arttifactory key
+                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
+                    sh "conan remote add ${conan_tmp_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_tmp_repo}" // the namme of the repo is the same that the arttifactory key
+                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
                 }
               }
+              // create the graph lock for the latest versions of dependencies in develop repo and with the
+              // latest revision of the library that trigered this pipeline
+              def lockfile = "${profile}.lock"
+              unstash lockfile
+              def bo_file = "build_order.json"
+              def lock_contents = [:]
+              sh "conan graph build-order ${lockfile} --json=${bo_file} --build missing"
+              build_order = readJSON(file: bo_file)
+              stage("Launch build: ${product}")
+              {
+                stash name: lockfile, includes: lockfile
+                build_order.each { references_list ->
+                  def stage_jobs = references_list.each { index_reference ->
+                    def lib_name = index_reference[1].split("/")[0]
+                    def lib_name_profile = "${lib_name}-${profile}.lock"
+                    // here, in the real world, one should invoke the actual lib pipeline, somemthing like:
+                    // build(job: "../lib/develop", propagate: true, wait: true, parameters...
+                    def upload_ref = (params.library_branch == "develop") ? true : false
+                    build_ref_with_lockfile(index_reference[1], lockfile, profile, upload_ref).call()
+                    unstash lib_name_profile
+                    sh "conan graph update-lock ${lockfile} ${lib_name_profile}"
+                    stash name: lockfile, includes: lockfile
+                  }
+                }                  
+                lock_contents = readJSON(file: lockfile)
+                sh "cat ${lockfile}"
+              }
+
               return lock_contents              
             }
             finally {
@@ -145,6 +173,7 @@ def promote_with_lockfile(lockfile_json, source_repo, target_repo, additional_re
       }
     }
   }
+  references_to_copy.unique()
   // now move all the package references that were build
   references_to_copy.each { pref ->
     // path: repo/user/name/version/channel/rrev/package/pkgid/prev/conan_package.tgz
@@ -159,7 +188,16 @@ def promote_with_lockfile(lockfile_json, source_repo, target_repo, additional_re
     echo "copy prev: ${prev} to ${target_repo}"
     withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
       sh "curl -u\"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -XPOST \"http://${artifactory_url}:8081/artifactory/api/copy/${source_repo}/${user}/${name_version}/${channel}/${rrev}/export?to=${target_repo}/${user}/${name_version}/${channel}/${rrev}\""
-      sh "curl -u\"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -XPOST \"http://${artifactory_url}:8081/artifactory/api/copy/${source_repo}/${user}/${name_version}/${channel}/${rrev}/package/${pkgid}/${prev}?to=${target_repo}/${user}/${name_version}/${channel}/${rrev}/package/${pkgid}/${prev}\""
+      // avoid copying again the same package revision
+      get_folder_out = sh (script: "curl -u\"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -XGET \"http://${artifactory_url}:8081/artifactory/api/storage/${target_repo}/${user}/${name_version}/${channel}/${rrev}/package/${pkgid}/${prev}\"", returnStdout: true)
+      echo "${get_folder_out}"
+      if (get_folder_out.contains("errors")) {
+        echo "ERROR 404"
+        sh "curl -u\"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -XPOST \"http://${artifactory_url}:8081/artifactory/api/copy/${source_repo}/${user}/${name_version}/${channel}/${rrev}/package/${pkgid}/${prev}?to=${target_repo}/${user}/${name_version}/${channel}/${rrev}/package/${pkgid}/${prev}\""
+      }
+      else {
+        echo "skip copy"        
+      }
     } 
   }
 }
@@ -176,13 +214,22 @@ pipeline {
     stage('Build affected products') {
       agent any
       steps {
-        script {          
+        script {   
           products_build_result = products.collectEntries { product ->
+
+            stage("Calc lockfiles for ${product}") {
+              echo "Calc lockfiles for '${product}'"
+              echo " - for changes in '${params.reference}'"
+              parallel profiles.collectEntries { profile, docker_image ->
+                ["${profile}": calc_lockfiles(product, profile, docker_image)]
+              }              
+            }
+
             stage("Build ${product}") {
               echo "Building product '${product}'"
               echo " - for changes in '${params.reference}'"
               build_result = parallel profiles.collectEntries { profile, docker_image ->
-                ["${profile}": get_stages(product, profile, docker_image)]
+                ["${profile}": get_build_stages(product, profile, docker_image)]
               }              
             }
             ["${product}": build_result]
@@ -216,15 +263,16 @@ pipeline {
                         promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
                       }
                       stage("Upload lockfile: ${profile} - ${product}") {
-                        writeJSON file: "conan.lock", json: lockfile
-                        def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/conan.lock"
+                        def lockfile_name = "${product}-${profile}.lock"
+                        writeJSON file: "${lockfile_name}", json: lockfile
+                        def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
                         def base_url = "http://${artifactory_url}:8081/artifactory"
                         def name = product.split("/")[0]
                         def version = product.split("/")[1].split("@")[0]
                         def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
                         withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
                             // upload the lockfile
-                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T conan.lock"
+                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T ${lockfile_name}"
                             // set properties in Artifactory for the file
                             sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}/api/storage${lockfile_path}${properties}"
                         }                                
