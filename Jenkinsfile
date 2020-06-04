@@ -64,7 +64,8 @@ def calc_lockfiles(product, profile, docker_image) {
               }
               // create the graph lock for the latest versions of dependencies in develop repo and with the
               // latest revision of the library that trigered this pipeline
-              def lockfile = "${profile}.lock"
+              def name = product.split("/")[0]
+              def lockfile = "${name}-${profile}.lock"
               def bo_file = "build_order.json"
               def affected_product = false
               def lock_contents = [:]
@@ -96,7 +97,7 @@ def calc_lockfiles(product, profile, docker_image) {
   }
 }
 
-def get_build_stages(product, profile, docker_image) {
+def build_wit_lockfiles(lockfiles) {
   return {
     stage(profile) {
       node {
@@ -224,7 +225,11 @@ pipeline {
                 ["${profile}": calc_lockfiles(product, profile, docker_image)]
               }              
             }
-
+            profiles.each { profile, docker_image ->
+              def lockfile = "${profile}.lock"
+              unstash lockfile
+              sh "cat ${lockfile}"
+            }
             stage("Build ${product}") {
               echo "Building product '${product}'"
               echo " - for changes in '${params.reference}'"
@@ -263,11 +268,11 @@ pipeline {
                         promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
                       }
                       stage("Upload lockfile: ${profile} - ${product}") {
-                        def lockfile_name = "${product}-${profile}.lock"
+                        def name = product.split("/")[0]
+                        def lockfile_name = "${name}-${profile}.lock"
                         writeJSON file: "${lockfile_name}", json: lockfile
                         def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
                         def base_url = "http://${artifactory_url}:8081/artifactory"
-                        def name = product.split("/")[0]
                         def version = product.split("/")[1].split("@")[0]
                         def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
                         withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
