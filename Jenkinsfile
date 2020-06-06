@@ -96,14 +96,14 @@ def calc_lockfiles(product, docker_image) {
               stage("Calculate lockfiles for building ${name} with ${params.reference}") {
                 profiles.each { profile, _ ->
                   echo "calc lockfile for profile: ${profile}"
-                  def lockfile = "${name}-${profile}.lock"
+                  def lockfile = "${name}-${profile}"
                   // install just the recipe for the new revision of the lib and then resolve graph with develop repo
                   // we don't want to bring binaries at this moment, this could be just a agent that
                   // then sends lockfiles to other nodes to build them
-                  sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile} -r ${conan_develop_repo}"
-                  stash name: lockfile, includes: lockfile 
+                  sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile}.lock -r ${conan_develop_repo}"
+                  stash name: lockfile, includes: "${lockfile}.lock" 
                   def build_order_file = "${name}-${profile}.json"             
-                  sh "conan graph build-order ${lockfile} --json=${build_order_file} --build libA --build cascade"
+                  sh "conan graph build-order ${lockfile}.lock --json=${build_order_file} --build libA --build cascade"
                   def build_order = readJSON(file: build_order_file)
                   lockfiles_build_order[lockfile] = build_order
                 }              
@@ -164,82 +164,6 @@ def calc_lockfiles(product, docker_image) {
   }
 }
 
-def build_ref_with_lockfile(reference, lockfile, profile, upload_ref) {
-  return {
-    stage("Build: ${reference} - ${profile}") {
-      unstash lockfile
-      def actual_reference_name = reference.split("/")[0]
-      def recipe_reference_with_revision = reference.split(":")[0]
-      def actual_reference = reference.split("#")[0]
-      echo("Build ${actual_reference_name}")
-      sh "cp ${lockfile} conan.lock"
-      sh "conan install ${actual_reference} --build ${actual_reference_name} --lockfile conan.lock"
-      sh "mv conan.lock ${actual_reference_name}-${profile}.lock"
-      stash name: "${actual_reference_name}-${profile}.lock", includes: "${actual_reference_name}-${profile}.lock"
-      stage ("Upload reference ${actual_reference}-${profile} to ${conan_tmp_repo}") {
-        if (upload_ref) {
-          sh "conan upload ${actual_reference} --all -r ${conan_tmp_repo} --confirm"
-        }
-      }
-    }
-  }
-}
-
-def build_with_lockfiles() {
-  return {
-    stage(profile) {
-      node {
-        docker.image(docker_image).inside("--net=host") {
-          echo "Inside docker image: ${docker_image}"
-          withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/${profile}/conan_home"]) {
-            try {
-              stage("Configure conan") {
-                sh "conan config install ${config_url}"
-                withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
-                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
-                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
-                }
-              }
-              // create the graph lock for the latest versions of dependencies in develop repo and with the
-              // latest revision of the library that trigered this pipeline
-              def lockfile = "${profile}.lock"
-              unstash lockfile
-              def bo_file = "build_order.json"
-              def lock_contents = [:]
-              sh "conan graph build-order ${lockfile} --json=${bo_file} --build missing"
-              build_order = readJSON(file: bo_file)
-              stage("Launch build: ${product}")
-              {
-                stash name: lockfile, includes: lockfile
-                build_order.each { references_list ->
-                  def stage_jobs = references_list.each { index_reference ->
-                    def lib_name = index_reference[1].split("/")[0]
-                    def lib_name_profile = "${lib_name}-${profile}.lock"
-                    // here, in the real world, one should invoke the actual lib pipeline, somemthing like:
-                    // build(job: "../lib/develop", propagate: true, wait: true, parameters...
-                    def upload_ref = (params.library_branch == "develop") ? true : false
-                    build_ref_with_lockfile(index_reference[1], lockfile, profile, upload_ref).call()
-                    unstash lib_name_profile
-                    sh "conan graph update-lock ${lockfile} ${lib_name_profile}"
-                    stash name: lockfile, includes: lockfile
-                  }
-                }                  
-                lock_contents = readJSON(file: lockfile)
-                sh "cat ${lockfile}"
-              }
-
-              return lock_contents              
-            }
-            finally {
-                deleteDir()
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
 pipeline {
   agent none
 
@@ -267,10 +191,10 @@ pipeline {
                 def build_params = []
                 echo "--------------- ${lib_name} -------------------"
                 lockfiles.each { lockfile ->
-                  def file_name = "${lockfile}"
+                  def profile_name = lockfile.split("-",2)[1]
                   unstash lockfile
-                  def lock_contents = readFile(file: lockfile)
-                  build_params.add([$class: 'StringParameterValue', name: "${lockfile}", value: lock_contents])
+                  def lock_contents = readFile(file: "${lockfile}.lock")
+                  build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
                 println build_params
                 build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)                   
