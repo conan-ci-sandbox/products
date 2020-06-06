@@ -92,7 +92,7 @@ def calc_lockfiles(product, docker_image) {
               // latest revision of the library that trigered this pipeline
               sh "conan download ${params.reference} -r ${conan_tmp_repo} --recipe"
               def name = product.split("/")[0]
-              def profiles_build_order = [:]
+              def lockfiles_build_order = [:]
               stage("Calculate lockfiles for building ${name} with ${params.reference}") {
                 profiles.each { profile, _ ->
                   echo "calc lockfile for profile: ${profile}"
@@ -105,11 +105,11 @@ def calc_lockfiles(product, docker_image) {
                   def build_order_file = "${name}-${profile}.json"             
                   sh "conan graph build-order ${lockfile} --json=${build_order_file} --build libA --build cascade"
                   def build_order = readJSON(file: build_order_file)
-                  profiles_build_order[lockfile] = build_order
+                  lockfiles_build_order[lockfile] = build_order
                 }              
               }
               def consolidated_build_order = null
-              println profiles_build_order
+              println lockfiles_build_order
               stage("Consolidate build order") {
 
                 def libs_to_build = []
@@ -118,7 +118,7 @@ def calc_lockfiles(product, docker_image) {
                 while (keep_going == true) {
                     keep_going = false
                     def build_map = [:]
-                    profiles_build_order.each { profile, build_order ->
+                    lockfiles_build_order.each { lockfile, build_order ->
                         def inverse_build_order = build_order.reverse()
                         if (inverse_build_order.size()>0) {
                             keep_going = true
@@ -126,10 +126,10 @@ def calc_lockfiles(product, docker_image) {
                                 references_list.each { index_reference ->
                                     def lib_name = index_reference[1].split("/")[0]
                                     if (!build_map.containsKey(lib_name)) {
-                                        build_map[lib_name] = [profile]
+                                        build_map[lib_name] = [lockfile]
                                     }
                                     else {
-                                        build_map[lib_name].add(profile)
+                                        build_map[lib_name].add(lockfile)
                                     }
                                 }
                                 break
@@ -264,11 +264,16 @@ pipeline {
 
             build_nodes.each { nodes_list ->
               nodes_list.each { lib_name, lockfiles ->
+                def build_params = []
                 echo "--------------- ${lib_name} -------------------"
                 lockfiles.each { lockfile ->
+                  def file_name = "${lockfile}"
                   unstash lockfile
-                  sh "cat ${lockfile}"
+                  def lock_contents = readFile(file: lockfile)
+                  build_params.add([$class: 'StringParameterValue', name: "${lockfile}", value: lock_contents])
                 }
+                println build_params
+                build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)                   
               }
             }
 
