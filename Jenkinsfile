@@ -103,12 +103,12 @@ def calc_lockfiles(product, docker_image) {
                   sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile} -r ${conan_develop_repo}"
                   stash name: lockfile, includes: lockfile 
                   def build_order_file = "${name}-${profile}.json"             
-                  sh "conan graph build-order ${lockfile} --json=${build_order_file} --build missing"
+                  sh "conan graph build-order ${lockfile} --json=${build_order_file} --build libA --build cascade"
                   def build_order = readJSON(file: build_order_file)
                   profiles_build_order[lockfile] = build_order
                 }              
               }
-
+              def consolidated_build_order = null
               println profiles_build_order
               stage("Consolidate build order") {
 
@@ -147,10 +147,12 @@ def calc_lockfiles(product, docker_image) {
                     }
                 }
 
-                def consolidated_build_order = libs_to_build.reverse()
+                consolidated_build_order = libs_to_build.reverse()
                 println consolidated_build_order
 
+
               }
+              return consolidated_build_order
             }
             finally {
                 deleteDir()
@@ -253,26 +255,30 @@ pipeline {
         script {   
           products_build_result = products.collectEntries { product ->
             def name = product.split("/")[0]
-  
+            // App and App2 never should be done in parallel, because you would build some dependencies twice
             stage("Calc lockfiles for ${product}") {
               echo "Calc lockfiles for '${product}'"
               echo " - for changes in '${params.reference}'"
-              calc_lockfiles(product, "conanio/gcc6").call()
+              build_nodes = calc_lockfiles(product, "conanio/gcc6").call()
             }
 
-            profiles.each { profile, docker_image ->
-              def lockfile = "${name}-${profile}.lock"
-              unstash lockfile
-              sh "cat ${lockfile}"
+            build_nodes.each { nodes_list ->
+              nodes_list.each { lib_name, lockfiles ->
+                echo "--------------- ${lib_name} -------------------"
+                lockfiles.each { lockfile ->
+                  unstash lockfile
+                  sh "cat ${lockfile}"
+                }
+              }
             }
 
-            stage("Build ${product}") {
-              echo "Building product '${product}'"
-              echo " - for changes in '${params.reference}'"
-              build_result = parallel profiles.collectEntries { profile, docker_image ->
-                ["${profile}": get_build_stages(product, profile, docker_image)]
-              }              
-            }
+            // stage("Build ${product}") {
+            //   echo "Building product '${product}'"
+            //   echo " - for changes in '${params.reference}'"
+            //   build_result = parallel profiles.collectEntries { profile, docker_image ->
+            //     ["${profile}": get_build_stages(product, profile, docker_image)]
+            //   }              
+            // }
             ["${product}": build_result]
           }
           println products_build_result
@@ -280,55 +286,55 @@ pipeline {
       }
     }
 
-    stage("Upload to develop repo") {
-      when {expression { return params.library_branch == "develop" }}
-      steps {
-        script {
-          docker.image("conanio/gcc6").inside("--net=host") {
-            // promote libraries to develop
-            withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
-              try {
-                sh "conan config install ${config_url}"
-                withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
-                    sh "conan remote add ${conan_develop_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_develop_repo}" // the namme of the repo is the same that the arttifactory key
-                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
-                    sh "conan remote add ${conan_tmp_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_tmp_repo}" // the namme of the repo is the same that the arttifactory key
-                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
-                }
+    // stage("Upload to develop repo") {
+    //   when {expression { return params.library_branch == "develop" }}
+    //   steps {
+    //     script {
+    //       docker.image("conanio/gcc6").inside("--net=host") {
+    //         // promote libraries to develop
+    //         withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
+    //           try {
+    //             sh "conan config install ${config_url}"
+    //             withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+    //                 sh "conan remote add ${conan_develop_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_develop_repo}" // the namme of the repo is the same that the arttifactory key
+    //                 sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
+    //                 sh "conan remote add ${conan_tmp_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_tmp_repo}" // the namme of the repo is the same that the arttifactory key
+    //                 sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
+    //             }
 
-                // promote using each of the lockfiles
-                products_build_result.each { product, result ->
-                  result.each { profile, lockfile ->
-                    if (lockfile.size()>0) {
-                      stage("Promote ${profile} binaries to conan-develop") {
-                        promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
-                      }
-                      stage("Upload lockfile: ${profile} - ${product}") {
-                        def name = product.split("/")[0]
-                        def lockfile_name = "${name}-${profile}.lock"
-                        writeJSON file: "${lockfile_name}", json: lockfile
-                        def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
-                        def base_url = "http://${artifactory_url}:8081/artifactory"
-                        def version = product.split("/")[1].split("@")[0]
-                        def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
-                        withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
-                            // upload the lockfile
-                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T ${lockfile_name}"
-                            // set properties in Artifactory for the file
-                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}/api/storage${lockfile_path}${properties}"
-                        }                                
-                      }                            
-                    }
-                  }
-                }
-              }
-              finally {
-                deleteDir()
-              }
-            }
-          }
-        }
-      }
-    }
+    //             // promote using each of the lockfiles
+    //             products_build_result.each { product, result ->
+    //               result.each { profile, lockfile ->
+    //                 if (lockfile.size()>0) {
+    //                   stage("Promote ${profile} binaries to conan-develop") {
+    //                     promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
+    //                   }
+    //                   stage("Upload lockfile: ${profile} - ${product}") {
+    //                     def name = product.split("/")[0]
+    //                     def lockfile_name = "${name}-${profile}.lock"
+    //                     writeJSON file: "${lockfile_name}", json: lockfile
+    //                     def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
+    //                     def base_url = "http://${artifactory_url}:8081/artifactory"
+    //                     def version = product.split("/")[1].split("@")[0]
+    //                     def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
+    //                     withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+    //                         // upload the lockfile
+    //                         sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T ${lockfile_name}"
+    //                         // set properties in Artifactory for the file
+    //                         sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}/api/storage${lockfile_path}${properties}"
+    //                     }                                
+    //                   }                            
+    //                 }
+    //               }
+    //             }
+    //           }
+    //           finally {
+    //             deleteDir()
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
   }
 }
