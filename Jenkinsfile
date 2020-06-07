@@ -103,7 +103,7 @@ def calc_lockfiles(product, docker_image) {
                   sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile}.lock -r ${conan_develop_repo}"
                   stash name: lockfile, includes: "${lockfile}.lock" 
                   def build_order_file = "${name}-${profile}.json"             
-                  sh "conan graph build-order ${lockfile}.lock --json=${build_order_file} --build libA --build cascade"
+                  sh "conan graph build-order ${lockfile}.lock --json=${build_order_file} --build libD --build cascade"
                   def build_order = readJSON(file: build_order_file)
                   lockfiles_build_order[lockfile] = build_order
                 }              
@@ -197,7 +197,9 @@ pipeline {
                   build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
                 println build_params
-                build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)                   
+                build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)     
+                unstash lockfile
+                sh "cat ${lockfile}"
               }
             }
 
@@ -208,7 +210,8 @@ pipeline {
             //     ["${profile}": get_build_stages(product, profile, docker_image)]
             //   }              
             // }
-            ["${product}": build_result]
+            //["${product}": build_result]
+            ["${product}": ""]
           }
           println products_build_result
         }
