@@ -197,11 +197,13 @@ pipeline {
                   build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
                 println build_params
-                build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
+                def build_result = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
+                copyArtifacts filter: '*.lock', projectName: "${lib_name}/develop", selector: specific(build_result.getNumber())
+                sh "ls"
                 // now we get back several lockfiles, one per profile
                 lockfiles.each { lockfile ->
-                  unstash lockfile
-                  sh "cat ${lockfile}"
+                  def profile_name = lockfile.split("-",2)[1]
+                  sh "cat ${lib_name}-${profile_name}.lock"
                 }                     
               }
             }
