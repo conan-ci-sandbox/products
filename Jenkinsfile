@@ -124,7 +124,7 @@ def calc_lockfiles(product, docker_image) {
                             keep_going = true
                             for (references_list in inverse_build_order) {
                                 references_list.each { index_reference ->
-                                    def lib_name = index_reference[1].split("/")[0]
+                                    def lib_name = index_reference[1].split("#")[0]
                                     if (!build_map.containsKey(lib_name)) {
                                         build_map[lib_name] = [lockfile]
                                     }
@@ -187,9 +187,10 @@ pipeline {
             }
 
             build_nodes.each { nodes_list ->
-              nodes_list.each { lib_name, lockfiles ->
+              nodes_list.each { reference, lockfiles ->
+                def lib_name = reference.split("/")[0]
                 def build_params = []
-                echo "--------------- ${lib_name} -------------------"
+                echo "--------------- ${reference} -------------------"
                 lockfiles.each { lockfile ->
                   def profile_name = lockfile.split("-",2)[1]
                   unstash lockfile
@@ -198,11 +199,17 @@ pipeline {
                 }
                 println build_params
                 def build_result = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
-                copyArtifacts filter: '*.lock', projectName: "${lib_name}/develop", selector: specific(build_result.getNumber())
-                sh "ls"
-                // now we get back several lockfiles, one per profile
+                def child_build_number = build_result.getNumber()
+                def child_job_name = "${lib_name}/develop"
+                // now we get the lockfiles from conan-metadata
                 lockfiles.each { lockfile ->
                   def profile_name = lockfile.split("-",2)[1]
+                  def lockfile_path = "/${artifactory_metadata_repo}/${child_job_name}/${child_build_number}/${reference}/${profile_name}/${profile_name}.lock"
+                  def base_url = "http://${artifactory_url}:8081/artifactory"
+                  withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+                      // download
+                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lockfile_path}"
+                  }                                
                   sh "cat ${lib_name}-${profile_name}.lock"
                 }                     
               }
