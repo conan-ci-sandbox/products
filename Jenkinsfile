@@ -209,11 +209,11 @@ pipeline {
                   def base_url = "http://${artifactory_url}:8081/artifactory"
                   withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
                       // download
-                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lib_lockfile_path} -o ${lib_name}-${profile_name}.lock"
+                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lib_lockfile_path} -o modified-${lib_name}-${profile_name}.lock"
                   }                                
                   sh "ls"
                   sh "cat ${products_lockfile}.lock"
-                  sh "conan graph update-lock ${products_lockfile}.lock ${lib_name}-${profile_name}.lock"
+                  sh "conan graph update-lock ${products_lockfile}.lock modified-${lib_name}-${profile_name}.lock"
                   sh "cat ${products_lockfile}.lock"
                   ["${profile_name}": readJSON(file: "${products_lockfile}.lock")]
                 }                     
