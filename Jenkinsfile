@@ -188,7 +188,10 @@ pipeline {
 
             def product_build_result = [:]
             build_nodes.each { nodes_list ->
+
               nodes_list.each { reference, lockfiles ->
+                
+                // optimization: parallel this
                 def lib_name = reference.split("/")[0]
                 def build_params = []
                 echo "--------------- ${reference} -------------------"
@@ -201,6 +204,8 @@ pipeline {
                   build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
                 def build_library_job = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
+
+
                 def child_build_number = build_library_job.getNumber()
                 def child_job_name = "${lib_name}/develop"
                 // now we get the lockfiles from conan-metadata
@@ -219,6 +224,7 @@ pipeline {
                   product_build_result["${profile_name}"] = readJSON(file: "${products_lockfile}.lock")
                 }                     
               }
+
             }
             echo "---------product_build_result------------"
             println product_build_result
