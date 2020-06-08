@@ -209,7 +209,7 @@ pipeline {
                   def base_url = "http://${artifactory_url}:8081/artifactory"
                   withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
                       // download
-                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lockfile_path} -o ${lib_name}-${profile_name}.lock"
+                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lib_lockfile_path} -o ${lib_name}-${profile_name}.lock"
                   }                                
                   sh "ls"
                   sh "cat ${products_lockfile}"
