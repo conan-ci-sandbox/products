@@ -200,7 +200,7 @@ pipeline {
                   build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
                 def build_library_job = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
-                def child_build_number = buildbuild_library_job_result.getNumber()
+                def child_build_number = build_library_job.getNumber()
                 def child_job_name = "${lib_name}/develop"
                 // now we get the lockfiles from conan-metadata
                 lockfiles.each { products_lockfile ->
