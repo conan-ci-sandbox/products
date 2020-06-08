@@ -102,8 +102,7 @@ def calc_lockfiles(product, docker_image) {
                   // then sends lockfiles to other nodes to build them
                   sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile}.lock -r ${conan_develop_repo}"
                   stash name: lockfile, includes: "${lockfile}.lock" 
-                  def build_order_file = "${name}-${profile}.json" 
-                  sh "conan remote disable ${conan_tmp_repo}"            
+                  def build_order_file = "${name}-${profile}.json"             
                   sh "conan graph build-order ${lockfile}.lock --json=${build_order_file} --build missing"
                   def build_order = readJSON(file: build_order_file)
                   lockfiles_build_order[lockfile] = build_order
