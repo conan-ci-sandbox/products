@@ -186,7 +186,8 @@ pipeline {
               build_nodes = calc_lockfiles(product, "conanio/gcc6").call()
             }
 
-            product_build_result = build_nodes.collectEntries { nodes_list ->
+            def product_build_result = [:]
+            build_nodes.each { nodes_list ->
               nodes_list.each { reference, lockfiles ->
                 def lib_name = reference.split("/")[0]
                 def build_params = []
@@ -215,13 +216,13 @@ pipeline {
                   sh "cat ${products_lockfile}.lock"
                   sh "conan graph update-lock ${products_lockfile}.lock modified-${lib_name}-${profile_name}.lock"
                   sh "cat ${products_lockfile}.lock"
-                  ["${profile_name}": readJSON(file: "${products_lockfile}.lock")]
+                  product_build_result["${profile_name}"] = readJSON(file: "${products_lockfile}.lock")
                 }                     
               }
             }
-          echo "---------product_build_result------------"
-          println product_build_result
-          echo "----------------------"
+            echo "---------product_build_result------------"
+            println product_build_result
+            echo "----------------------"
             ["${product}": product_build_result]
           }
           echo "--------products_build_result--------------"
