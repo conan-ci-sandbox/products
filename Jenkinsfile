@@ -219,9 +219,14 @@ pipeline {
                 }                     
               }
             }
+          echo "---------product_build_result------------"
+          println product_build_result
+          echo "----------------------"
             ["${product}": product_build_result]
           }
+          echo "--------products_build_result--------------"
           println products_build_result
+          echo "----------------------"
         }
       }
     }
