@@ -215,10 +215,9 @@ pipeline {
                   sh "cat ${products_lockfile}.lock"
                   sh "conan graph update-lock ${products_lockfile}.lock ${lib_name}-${profile_name}.lock"
                   sh "cat ${products_lockfile}.lock"
+                  ["${profile}": readJSON(file: "${products_lockfile}.lock")]
                 }                     
               }
-              products_lockfile_contents = readJSON(file: "${products_lockfile}.lock")
-              ["${profile}": products_lockfile_contents]
             }
             ["${product}": product_build_result]
           }
