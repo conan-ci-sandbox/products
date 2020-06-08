@@ -186,100 +186,96 @@ pipeline {
               build_nodes = calc_lockfiles(product, "conanio/gcc6").call()
             }
 
-            build_nodes.each { nodes_list ->
+            product_build_result = build_nodes.collectEntries { nodes_list ->
               nodes_list.each { reference, lockfiles ->
                 def lib_name = reference.split("/")[0]
                 def build_params = []
                 echo "--------------- ${reference} -------------------"
-                lockfiles.each { lockfile ->
-                  def profile_name = lockfile.split("-",2)[1]
-                  unstash lockfile
-                  def lock_contents = readFile(file: "${lockfile}.lock")
+                lockfiles.each { products_lockfile ->
+                  def profile_name = products_lockfile.split("-",2)[1]
+                  if (!fileExists("${products_lockfile}")) {
+                    unstash products_lockfile
+                  }
+                  def lock_contents = readFile(file: "${products_lockfile}.lock")
                   build_params.add([$class: 'StringParameterValue', name: "${profile_name}", value: lock_contents])
                 }
-                println build_params
-                def build_result = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
-                def child_build_number = build_result.getNumber()
+                def build_library_job = build(job: "../${lib_name}/develop", propagate: true, wait: true, parameters: build_params)
+                def child_build_number = buildbuild_library_job_result.getNumber()
                 def child_job_name = "${lib_name}/develop"
                 // now we get the lockfiles from conan-metadata
-                lockfiles.each { lockfile ->
-                  def profile_name = lockfile.split("-",2)[1]
-                  def lockfile_path = "/${artifactory_metadata_repo}/${child_job_name}/${child_build_number}/${reference}/${profile_name}/${profile_name}.lock"
+                lockfiles.each { products_lockfile ->
+                  def profile_name = products_lockfile.split("-",2)[1]
+                  def lib_lockfile_path = "/${artifactory_metadata_repo}/${child_job_name}/${child_build_number}/${reference}/${profile_name}/${profile_name}.lock"
                   def base_url = "http://${artifactory_url}:8081/artifactory"
                   withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
                       // download
-                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lockfile_path} -O"
+                      sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lockfile_path} -o ${lib_name}-${profile_name}.lock"
                   }                                
                   sh "ls"
-                  sh "cat ${profile_name}.lock"
+                  sh "cat ${products_lockfile}"
+                  sh "conan graph update-lock ${products_lockfile} ${lib_name}-${profile_name}.lock"
+                  sh "cat ${products_lockfile}"
                 }                     
               }
+              products_lockfile_contents = readJSON(file: products_lockfile)
+              ["${profile}": products_lockfile_contents]
             }
-
-            // stage("Build ${product}") {
-            //   echo "Building product '${product}'"
-            //   echo " - for changes in '${params.reference}'"
-            //   build_result = parallel profiles.collectEntries { profile, docker_image ->
-            //     ["${profile}": get_build_stages(product, profile, docker_image)]
-            //   }              
-            // }
-            //["${product}": build_result]
-            ["${product}": ""]
+            ["${product}": product_build_result]
           }
           println products_build_result
         }
       }
     }
 
-    // stage("Upload to develop repo") {
-    //   when {expression { return params.library_branch == "develop" }}
-    //   steps {
-    //     script {
-    //       docker.image("conanio/gcc6").inside("--net=host") {
-    //         // promote libraries to develop
-    //         withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
-    //           try {
-    //             sh "conan config install ${config_url}"
-    //             withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
-    //                 sh "conan remote add ${conan_develop_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_develop_repo}" // the namme of the repo is the same that the arttifactory key
-    //                 sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
-    //                 sh "conan remote add ${conan_tmp_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_tmp_repo}" // the namme of the repo is the same that the arttifactory key
-    //                 sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
-    //             }
+    stage("Upload to develop repo") {
+      when {expression { return params.library_branch == "develop" }}
+      steps {
+        script {
+          docker.image("conanio/gcc6").inside("--net=host") {
+            // promote libraries to develop
+            withEnv(["CONAN_USER_HOME=${env.WORKSPACE}/conan_cache"]) {
+              try {
+                sh "conan config install ${config_url}"
+                withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+                    sh "conan remote add ${conan_develop_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_develop_repo}" // the namme of the repo is the same that the arttifactory key
+                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_develop_repo} ${ARTIFACTORY_USER}"
+                    sh "conan remote add ${conan_tmp_repo} http://${artifactory_url}:8081/artifactory/api/conan/${conan_tmp_repo}" // the namme of the repo is the same that the arttifactory key
+                    sh "conan user -p ${ARTIFACTORY_PASSWORD} -r ${conan_tmp_repo} ${ARTIFACTORY_USER}"
+                }
 
-    //             // promote using each of the lockfiles
-    //             products_build_result.each { product, result ->
-    //               result.each { profile, lockfile ->
-    //                 if (lockfile.size()>0) {
-    //                   stage("Promote ${profile} binaries to conan-develop") {
-    //                     promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
-    //                   }
-    //                   stage("Upload lockfile: ${profile} - ${product}") {
-    //                     def name = product.split("/")[0]
-    //                     def lockfile_name = "${name}-${profile}.lock"
-    //                     writeJSON file: "${lockfile_name}", json: lockfile
-    //                     def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
-    //                     def base_url = "http://${artifactory_url}:8081/artifactory"
-    //                     def version = product.split("/")[1].split("@")[0]
-    //                     def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
-    //                     withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
-    //                         // upload the lockfile
-    //                         sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T ${lockfile_name}"
-    //                         // set properties in Artifactory for the file
-    //                         sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}/api/storage${lockfile_path}${properties}"
-    //                     }                                
-    //                   }                            
-    //                 }
-    //               }
-    //             }
-    //           }
-    //           finally {
-    //             deleteDir()
-    //           }
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
+                // promote using each of the lockfiles
+                products_build_result.each { product, result ->
+                  result.each { profile, lockfile ->
+                    if (lockfile.size()>0) {
+                      stage("Promote ${profile} binaries to conan-develop") {
+                        promote_with_lockfile(lockfile, conan_tmp_repo, conan_develop_repo, ["${params.reference}"])
+                      }
+                      stage("Upload lockfile: ${profile} - ${product}") {
+                        def name = product.split("/")[0]
+                        def lockfile_name = "${name}-${profile}.lock"
+                        writeJSON file: "${lockfile_name}", json: lockfile
+                        def lockfile_path = "/${artifactory_metadata_repo}/${env.JOB_NAME}/${env.BUILD_NUMBER}/${product}/${profile}/${lockfile_name}"
+                        def base_url = "http://${artifactory_url}:8081/artifactory"
+                        def version = product.split("/")[1].split("@")[0]
+                        def properties = "?properties=build.name=${env.JOB_NAME}%7Cbuild.number=${env.BUILD_NUMBER}%7Cprofile=${profile}%7Cname=${name}%7Cversion=${version}"
+                        withCredentials([usernamePassword(credentialsId: 'artifactory-credentials', usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASSWORD')]) {
+                            // upload the lockfile
+                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}${lockfile_path} -T ${lockfile_name}"
+                            // set properties in Artifactory for the file
+                            sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X PUT ${base_url}/api/storage${lockfile_path}${properties}"
+                        }                                
+                      }                            
+                    }
+                  }
+                }
+              }
+              finally {
+                deleteDir()
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
