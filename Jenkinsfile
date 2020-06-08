@@ -193,7 +193,7 @@ pipeline {
                 echo "--------------- ${reference} -------------------"
                 lockfiles.each { products_lockfile ->
                   def profile_name = products_lockfile.split("-",2)[1]
-                  if (!fileExists("${products_lockfile}")) {
+                  if (!fileExists("${products_lockfile}.lock")) {
                     unstash products_lockfile
                   }
                   def lock_contents = readFile(file: "${products_lockfile}.lock")
@@ -212,12 +212,12 @@ pipeline {
                       sh "curl --user \"\${ARTIFACTORY_USER}\":\"\${ARTIFACTORY_PASSWORD}\" -X GET ${base_url}${lib_lockfile_path} -o ${lib_name}-${profile_name}.lock"
                   }                                
                   sh "ls"
-                  sh "cat ${products_lockfile}"
-                  sh "conan graph update-lock ${products_lockfile} ${lib_name}-${profile_name}.lock"
-                  sh "cat ${products_lockfile}"
+                  sh "cat ${products_lockfile}.lock"
+                  sh "conan graph update-lock ${products_lockfile}.lock ${lib_name}-${profile_name}.lock"
+                  sh "cat ${products_lockfile}.lock"
                 }                     
               }
-              products_lockfile_contents = readJSON(file: products_lockfile)
+              products_lockfile_contents = readJSON(file: "${products_lockfile}.lock")
               ["${profile}": products_lockfile_contents]
             }
             ["${product}": product_build_result]
