@@ -90,9 +90,16 @@ def calc_lockfiles(product, docker_image) {
               }
               // create the graph lock for the latest versions of dependencies in develop repo and with the
               // latest revision of the library that trigered this pipeline
-              sh "conan download ${params.reference} -r ${conan_tmp_repo} --recipe"
               def name = product.split("/")[0]
               def lockfiles_build_order = [:]
+              stage("Install ${params.reference} for all profiles") {
+                profiles.each { profile, _ ->
+                  sh "conan install ${params.reference} -r ${conan_tmp_repo} --profile ${profile}"
+                }
+                // we don't want to pick anything from conan-tmp but the new revision of the lib
+                // we have just installed
+                sh "conan remote remove ${conan_tmp_repo}"
+              }
               stage("Calculate lockfiles for building ${name} with ${params.reference}") {
                 profiles.each { profile, _ ->
                   echo "calc lockfile for profile: ${profile}"
@@ -102,7 +109,7 @@ def calc_lockfiles(product, docker_image) {
                   // then sends lockfiles to other nodes to build them
                   sh "conan graph lock ${product} --profile=${profile} --lockfile=${lockfile}.lock -r ${conan_develop_repo}"
                   stash name: lockfile, includes: "${lockfile}.lock" 
-                  def build_order_file = "${name}-${profile}.json"             
+                  def build_order_file = "${name}-${profile}.json"
                   sh "conan graph build-order ${lockfile}.lock --json=${build_order_file} --build missing"
                   def build_order = readJSON(file: build_order_file)
                   lockfiles_build_order[lockfile] = build_order
